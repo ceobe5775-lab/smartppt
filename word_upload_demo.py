@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import argparse
 import html
 import os
+import threading
+import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
@@ -117,11 +120,31 @@ class WordUploadHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def run_server(host: str = "0.0.0.0", port: int = 8000) -> None:
+def run_server(host: str = "0.0.0.0", port: int = 8000, open_browser: bool = False) -> None:
     print(f"Starting server at http://{host}:{port}")
+
+    if open_browser:
+        browse_host = "127.0.0.1" if host == "0.0.0.0" else host
+        browse_url = f"http://{browse_host}:{port}"
+        print(f"Opening browser: {browse_url}")
+        threading.Timer(0.6, lambda: webbrowser.open(browse_url)).start()
+
     with HTTPServer((host, port), WordUploadHandler) as httpd:
         httpd.serve_forever()
 
 
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run a minimal Word upload demo server.")
+    parser.add_argument("--host", default="0.0.0.0", help="Host to bind, default: 0.0.0.0")
+    parser.add_argument("--port", type=int, default=8000, help="Port to bind, default: 8000")
+    parser.add_argument(
+        "--open-browser",
+        action="store_true",
+        help="Automatically open default browser after server starts.",
+    )
+    return parser.parse_args()
+
+
 if __name__ == "__main__":
-    run_server()
+    args = parse_args()
+    run_server(host=args.host, port=args.port, open_browser=args.open_browser)

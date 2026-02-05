@@ -28,6 +28,12 @@ python word_upload_demo.py
 py -3 word_upload_demo.py
 ```
 
+想要自动弹出浏览器窗口（更省事）：
+
+```cmd
+python word_upload_demo.py --open-browser
+```
+
 如果你当前目录不是项目目录，请先切到脚本所在目录再执行：
 
 ```cmd
@@ -39,6 +45,12 @@ python word_upload_demo.py
 
 ```bash
 python3 word_upload_demo.py
+```
+
+自动打开浏览器：
+
+```bash
+python3 word_upload_demo.py --open-browser
 ```
 
 默认监听 `http://localhost:8000`。
