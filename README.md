@@ -2,6 +2,23 @@
 
 这是一个最小可运行 demo，用于先验证「能否上传 Word 文档」。
 
+## 先解释你在 GitHub 页面看到的问题
+
+你看到仓库页面还是：
+
+- `Add a README`
+- `No releases published`
+
+通常是因为你当前查看的是 **main 分支**，而本次改动在工作分支（例如 `work`）上，还没有合并到 main。
+
+### 怎么确认
+
+1. 在 GitHub 左上角分支下拉框，切换到 `work`（或你的 PR 分支）看是否能看到 `README.md`。
+2. 打开 Pull Request，确认是否已经 **Merge** 到 main。
+3. 合并后再切回 main，README 就会显示在仓库首页。
+
+> `Releases` 是“版本发布”功能，和是否能打开上传网页不是一回事；不创建 release 也完全可以本地跑起来测试。
+
 ## 1) 运行服务
 
 ### Windows（推荐先看）
