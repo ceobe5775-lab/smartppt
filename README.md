@@ -4,6 +4,39 @@
 
 ## 1) 运行服务
 
+### Windows（推荐先看）
+
+你刚才输入的是：
+
+```cmd
+Python 3 word_upload_demo.py
+```
+
+这里 `Python` 和 `3` 被当成了两个参数，所以 Python 会把 `3` 当作文件名，才会出现：
+
+- `can't open file 'C:\\Users\\...\\3'`
+
+请改为下面任意一种（**中间不要有空格 `Python 3`**）：
+
+```cmd
+python word_upload_demo.py
+```
+
+或：
+
+```cmd
+py -3 word_upload_demo.py
+```
+
+如果你当前目录不是项目目录，请先切到脚本所在目录再执行：
+
+```cmd
+cd /d D:\your\project\smartppt
+python word_upload_demo.py
+```
+
+### macOS / Linux
+
 ```bash
 python3 word_upload_demo.py
 ```
@@ -20,11 +53,27 @@ python3 word_upload_demo.py
 
 ## 3) 命令行快速测试（可选）
 
+Windows PowerShell：
+
+```powershell
+curl -F "file=@C:/path/to/your/test.docx" http://localhost:8000
+```
+
+macOS / Linux：
+
 ```bash
 curl -F "file=@/path/to/your/test.docx" http://localhost:8000
 ```
 
 ## 4) 单元测试
+
+Windows：
+
+```cmd
+python -m unittest -v
+```
+
+macOS / Linux：
 
 ```bash
 python3 -m unittest -v
