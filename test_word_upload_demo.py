@@ -16,6 +16,9 @@ from word_upload_demo import (
     paginate_blocks,
     split_to_bullets,
 )
+import unittest
+
+from word_upload_demo import is_allowed_word_file
 
 
 class TestWordFileValidation(unittest.TestCase):
@@ -134,6 +137,7 @@ class TestRedirectEncoding(unittest.TestCase):
         location = build_redirect_location("处理完成：2 个文件", "latest_result.json")
         location.encode("latin-1")
         self.assertIn("result=latest_result.json", location)
+        self.assertFalse(is_allowed_word_file("notes.txt"))
 
 
 if __name__ == "__main__":
