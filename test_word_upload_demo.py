@@ -5,6 +5,7 @@ from pathlib import Path
 
 from word_upload_demo import (
     ParagraphBlock,
+    build_redirect_location,
     extract_docx_paragraphs,
     is_allowed_word_file,
     paginate_blocks,
@@ -67,6 +68,15 @@ class TestDocxExtraction(unittest.TestCase):
             self.assertEqual(2, len(blocks))
             self.assertTrue(blocks[0].is_heading)
             self.assertEqual("正文段落", blocks[1].text)
+
+
+class TestRedirectEncoding(unittest.TestCase):
+    def test_redirect_location_is_ascii_and_round_trippable(self):
+        location = build_redirect_location("处理完成：2 个文件", "latest_result.json")
+        self.assertTrue(location.startswith("/?message="))
+        # HTTP header value must be latin-1 encodable, so URL should remain ASCII after quoting.
+        location.encode("latin-1")
+        self.assertIn("result=latest_result.json", location)
 
 
 if __name__ == "__main__":

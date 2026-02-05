@@ -12,7 +12,7 @@ from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 from xml.etree import ElementTree as ET
 
 UPLOAD_DIR = Path("uploads")
@@ -307,8 +307,7 @@ class WordUploadHandler(BaseHTTPRequestHandler):
         return files
 
     def _redirect_with_message(self, message: str, result_name: str) -> None:
-        encoded_message = message.replace(" ", "%20")
-        location = f"/?message={encoded_message}&result={result_name}"
+        location = build_redirect_location(message, result_name)
         self.send_response(HTTPStatus.SEE_OTHER)
         self.send_header("Location", location)
         self.end_headers()
@@ -320,6 +319,11 @@ class WordUploadHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+
+def build_redirect_location(message: str, result_name: str) -> str:
+    query = urlencode({"message": message, "result": result_name})
+    return f"/?{query}"
 
 
 def run_server(host: str = "0.0.0.0", port: int = 8000, open_browser: bool = False) -> None:
