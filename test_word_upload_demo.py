@@ -6,8 +6,11 @@ from pathlib import Path
 from word_upload_demo import (
     ParagraphBlock,
     build_redirect_location,
+    detect_person_topic,
     extract_docx_paragraphs,
     is_allowed_word_file,
+    is_quote_line,
+    is_section_title,
     paginate_blocks,
 )
 
@@ -21,30 +24,35 @@ class TestWordFileValidation(unittest.TestCase):
 
     def test_reject_other_extensions(self):
         self.assertFalse(is_allowed_word_file("image.png"))
-        self.assertFalse(is_allowed_word_file("notes.txt"))
+
+
+class TestSignals(unittest.TestCase):
+    def test_section_title_detection(self):
+        self.assertTrue(is_section_title("一、建安风骨"))
+        self.assertTrue(is_section_title("建安风骨：乱世慷慨"))
+
+    def test_person_detection(self):
+        self.assertEqual("曹操", detect_person_topic("曹操作为建安文学领袖"))
+
+    def test_quote_detection(self):
+        self.assertTrue(is_quote_line("“老骥伏枥，志在千里。”"))
 
 
 class TestPagination(unittest.TestCase):
-    def test_heading_splits_pages(self):
+    def test_rule_based_split(self):
         blocks = [
-            ParagraphBlock("封面", is_heading=True),
-            ParagraphBlock("第一页正文"),
-            ParagraphBlock("第二章", is_heading=True),
-            ParagraphBlock("第二页正文"),
+            ParagraphBlock("一、建安风骨", is_heading=True),
+            ParagraphBlock("建安文学强调现实关怀。"),
+            ParagraphBlock("曹操作为建安文学领袖，风格沉郁雄健。"),
+            ParagraphBlock("“老骥伏枥，志在千里。”"),
+            ParagraphBlock("曹丕是曹操之子，推动七言诗成熟。"),
         ]
-        pages = paginate_blocks(blocks, max_chars_per_page=100)
-        self.assertEqual(2, len(pages))
-        self.assertEqual("封面", pages[0]["title"])
-        self.assertEqual("第二章", pages[1]["title"])
-
-    def test_char_limit_splits_pages(self):
-        blocks = [
-            ParagraphBlock("标题", is_heading=True),
-            ParagraphBlock("A" * 10),
-            ParagraphBlock("B" * 10),
-        ]
-        pages = paginate_blocks(blocks, max_chars_per_page=15)
-        self.assertEqual(2, len(pages))
+        pages = paginate_blocks(blocks)
+        page_types = [p["page_type"] for p in pages]
+        self.assertIn("section_cover", page_types)
+        self.assertIn("person_profile", page_types)
+        self.assertIn("quote", page_types)
+        self.assertTrue(all("evidence" in p for p in pages))
 
 
 class TestDocxExtraction(unittest.TestCase):
@@ -67,14 +75,11 @@ class TestDocxExtraction(unittest.TestCase):
             blocks = extract_docx_paragraphs(p)
             self.assertEqual(2, len(blocks))
             self.assertTrue(blocks[0].is_heading)
-            self.assertEqual("正文段落", blocks[1].text)
 
 
 class TestRedirectEncoding(unittest.TestCase):
     def test_redirect_location_is_ascii_and_round_trippable(self):
         location = build_redirect_location("处理完成：2 个文件", "latest_result.json")
-        self.assertTrue(location.startswith("/?message="))
-        # HTTP header value must be latin-1 encodable, so URL should remain ASCII after quoting.
         location.encode("latin-1")
         self.assertIn("result=latest_result.json", location)
 

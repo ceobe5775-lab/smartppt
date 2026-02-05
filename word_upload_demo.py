@@ -4,6 +4,7 @@ import argparse
 import html
 import json
 import os
+import re
 import threading
 import webbrowser
 import zipfile
@@ -11,7 +12,6 @@ from dataclasses import dataclass
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Iterable
 from urllib.parse import parse_qs, urlencode, urlparse
 from xml.etree import ElementTree as ET
 
@@ -23,6 +23,19 @@ MAX_FILES = 50
 DOCX_NS = {"w": "http://schemas.openxmlformats.org/wordprocessingml/2006/main"}
 
 
+@dataclass(frozen=True)
+class EngineConfig:
+    max_chars_per_page: int = 260
+    max_bullets_per_page: int = 6
+    short_title_char_limit: int = 20
+
+
+ENGINE_CONFIG = EngineConfig()
+SECTION_TITLE_RE = re.compile(r"^(?:[一二三四五六七八九十]+、|\d+[\.、])")
+PERSON_START_RE = re.compile(r"^([\u4e00-\u9fff]{2,3})(?:作为|是|则是)")
+QUOTE_RE = re.compile(r'["“].+["”]')
+
+
 @dataclass
 class ParagraphBlock:
     text: str
@@ -30,7 +43,6 @@ class ParagraphBlock:
 
 
 def is_allowed_word_file(filename: str) -> bool:
-    """Return True when filename ends with .doc or .docx (case-insensitive)."""
     lowered = filename.lower()
     return lowered.endswith(".doc") or lowered.endswith(".docx")
 
@@ -39,8 +51,37 @@ def sanitize_filename(filename: str) -> str:
     return os.path.basename(filename).replace("..", "").strip()
 
 
+def is_section_title(text: str) -> bool:
+    text = text.strip()
+    if SECTION_TITLE_RE.match(text):
+        return True
+    if "：" in text and len(text.split("：", 1)[0]) <= ENGINE_CONFIG.short_title_char_limit:
+        return True
+    return False
+
+
+def detect_person_topic(text: str) -> str:
+    match = PERSON_START_RE.match(text.strip())
+    if match:
+        return match.group(1)
+    return ""
+
+
+def is_quote_line(text: str) -> bool:
+    stripped = text.strip()
+    return bool(QUOTE_RE.search(stripped))
+
+
+def split_to_bullets(text: str) -> list[str]:
+    text = text.strip()
+    if not text:
+        return []
+    chunks = re.split(r"[；;。]", text)
+    bullets = [chunk.strip() for chunk in chunks if chunk.strip()]
+    return bullets[:2] if bullets else [text]
+
+
 def extract_docx_paragraphs(file_path: Path) -> list[ParagraphBlock]:
-    """Extract text blocks from .docx and mark heading paragraphs when style says Heading*."""
     with zipfile.ZipFile(file_path, "r") as archive:
         try:
             document_xml = archive.read("word/document.xml")
@@ -61,51 +102,109 @@ def extract_docx_paragraphs(file_path: Path) -> list[ParagraphBlock]:
         if style_node is not None:
             style_val = style_node.attrib.get(f"{{{DOCX_NS['w']}}}val", "")
 
-        is_heading = style_val.lower().startswith("heading")
-        blocks.append(ParagraphBlock(text=text, is_heading=is_heading))
+        blocks.append(ParagraphBlock(text=text, is_heading=style_val.lower().startswith("heading")))
 
     return blocks
 
 
-def paginate_blocks(blocks: Iterable[ParagraphBlock], max_chars_per_page: int = 800) -> list[dict]:
+def init_page(title: str, topic: str, page_type: str, first_signal: str, chunk_id: int) -> dict:
+    return {
+        "title": title,
+        "topic": topic,
+        "page_type": page_type,
+        "bullets": [],
+        "quotes": [],
+        "content": "",
+        "char_count": 0,
+        "evidence": {"signals": [first_signal] if first_signal else [], "source_chunks": [chunk_id]},
+    }
+
+
+def finalize_page(page: dict) -> dict:
+    page["content"] = "\n".join(page["bullets"] + page["quotes"]).strip()
+    page["char_count"] = len(page["content"])
+    page["quality_score"] = score_page(page)
+    return page
+
+
+def score_page(page: dict) -> int:
+    score = 100
+    if page["char_count"] > ENGINE_CONFIG.max_chars_per_page:
+        score -= 25
+    if not (1 <= len(page["bullets"]) <= ENGINE_CONFIG.max_bullets_per_page):
+        score -= 15
+    if page["page_type"] == "quote" and not page["quotes"]:
+        score -= 20
+    if page["page_type"] == "person_profile" and not page["topic"]:
+        score -= 10
+    return max(0, score)
+
+
+def paginate_blocks(blocks: list[ParagraphBlock], config: EngineConfig = ENGINE_CONFIG) -> list[dict]:
     pages: list[dict] = []
-    current_title = "未命名页"
-    current_lines: list[str] = []
+    current = init_page("课程导入", "总览", "bullets", "init", 0)
+    current_person = ""
 
-    def flush_page() -> None:
-        nonlocal current_lines, current_title
-        if not current_lines:
+    def flush() -> None:
+        nonlocal current
+        if not current["bullets"] and not current["quotes"]:
             return
-        content = "\n".join(current_lines).strip()
-        if not content:
-            return
-        pages.append(
-            {
-                "title": current_title,
-                "content": content,
-                "char_count": len(content),
-            }
-        )
-        current_lines = []
+        pages.append(finalize_page(current))
 
-    for block in blocks:
-        if block.is_heading:
-            flush_page()
-            current_title = block.text
+    for idx, block in enumerate(blocks, start=1):
+        text = block.text.strip()
+        if not text:
             continue
 
-        prospective = "\n".join(current_lines + [block.text]).strip()
-        if current_lines and len(prospective) > max_chars_per_page:
-            flush_page()
-        current_lines.append(block.text)
+        person = detect_person_topic(text)
+        section_hit = block.is_heading or is_section_title(text)
+        quote_hit = is_quote_line(text)
 
-    flush_page()
+        if section_hit:
+            flush()
+            current = init_page(text, text.split("：", 1)[0], "section_cover", "section", idx)
+            current_person = ""
+            continue
+
+        if person and person != current_person and (current["bullets"] or current["quotes"]):
+            flush()
+            current = init_page(f"{person}：核心知识点", person, "person_profile", "person_switch", idx)
+            current_person = person
+        elif person and not current_person:
+            current["topic"] = person
+            current["page_type"] = "person_profile"
+            current["evidence"]["signals"].append("person_switch")
+            current_person = person
+
+        if quote_hit:
+            if current["bullets"] and current["page_type"] != "quote":
+                flush()
+                quote_title = f"{current['topic']}：代表诗句" if current["topic"] else "代表诗句"
+                current = init_page(quote_title, current.get("topic", ""), "quote", "quote_block", idx)
+            current["quotes"].append(text)
+            current["evidence"]["signals"].append("quote_block")
+            current["evidence"]["source_chunks"].append(idx)
+            continue
+
+        for bullet in split_to_bullets(text):
+            projected = "\n".join(current["bullets"] + [bullet] + current["quotes"])
+            if (
+                current["bullets"]
+                and (len(projected) > config.max_chars_per_page or len(current["bullets"]) >= config.max_bullets_per_page)
+            ):
+                flush()
+                follow_title = f"{current['topic']}（续）" if current["topic"] else "知识点续页"
+                current = init_page(follow_title, current.get("topic", ""), "bullets", "length", idx)
+            current["bullets"].append(bullet)
+            current["evidence"]["source_chunks"].append(idx)
+
+    flush()
 
     if not pages:
-        pages.append({"title": current_title, "content": "", "char_count": 0})
+        pages = [finalize_page(init_page("空文档", "", "summary", "empty", 0))]
 
-    for idx, page in enumerate(pages, start=1):
-        page["page_no"] = idx
+    for i, page in enumerate(pages, start=1):
+        page["page_no"] = i
 
     return pages
 
@@ -115,7 +214,7 @@ def parse_and_paginate_word(file_path: Path) -> dict:
     if suffix == ".doc":
         return {
             "status": "unsupported",
-            "reason": "V1 暂不解析 .doc（二进制老格式），建议转为 .docx 后上传。",
+            "reason": "V2 暂不解析 .doc（二进制老格式），建议转为 .docx 后上传。",
             "pages": [],
         }
 
@@ -127,6 +226,7 @@ def parse_and_paginate_word(file_path: Path) -> dict:
         "pages": pages,
         "total_pages": len(pages),
         "total_chars": sum(page["char_count"] for page in pages),
+        "avg_score": round(sum(page["quality_score"] for page in pages) / len(pages), 2) if pages else 0,
     }
 
 
@@ -138,7 +238,7 @@ class WordUploadHandler(BaseHTTPRequestHandler):
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>Word 批量上传与分页解析（V1）</title>
+  <title>Word 知识点分页引擎（V2）</title>
   <style>
     body {{ font-family: Arial, sans-serif; margin: 2rem; }}
     .ok {{ color: #0a7; }}
@@ -146,15 +246,14 @@ class WordUploadHandler(BaseHTTPRequestHandler):
   </style>
 </head>
 <body>
-  <h1>Word 批量上传与分页解析（V1）</h1>
-  <p>支持 <strong>.doc / .docx</strong>，单文件最大 10MB，一次最多 50 个文件（可用于 20~50 份验收）。</p>
-  <p>上传后会输出分页 JSON（每页 title/content/char_count/page_no）。</p>
+  <h1>Word 知识点分页引擎（V2）</h1>
+  <p>支持 .doc/.docx，单次最多 50 份。输出包含 page_type/topic/bullets/quotes/evidence。</p>
   <p class="ok">{escaped_message}</p>
   <form method="post" enctype="multipart/form-data" action="/upload">
     <input type="file" name="files" accept=".doc,.docx" multiple required />
-    <button type="submit">上传并解析</button>
+    <button type="submit">上传并分页</button>
   </form>
-  <h2>最近一次解析结果</h2>
+  <h2>最近一次解析结果（JSON）</h2>
   <pre>{escaped_result}</pre>
 </body>
 </html>
@@ -208,30 +307,17 @@ class WordUploadHandler(BaseHTTPRequestHandler):
         OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
         results: list[dict] = []
-
         for filename, file_bytes in files:
             safe_name = sanitize_filename(filename)
             if not safe_name:
                 continue
 
             if len(file_bytes) > MAX_FILE_SIZE:
-                results.append(
-                    {
-                        "file": safe_name,
-                        "status": "rejected",
-                        "reason": f"文件超过 {MAX_FILE_SIZE} 字节限制",
-                    }
-                )
+                results.append({"file": safe_name, "status": "rejected", "reason": f"文件超过 {MAX_FILE_SIZE} 字节限制"})
                 continue
 
             if not is_allowed_word_file(safe_name):
-                results.append(
-                    {
-                        "file": safe_name,
-                        "status": "rejected",
-                        "reason": "仅允许 .doc/.docx",
-                    }
-                )
+                results.append({"file": safe_name, "status": "rejected", "reason": "仅允许 .doc/.docx"})
                 continue
 
             save_path = UPLOAD_DIR / safe_name
@@ -242,33 +328,12 @@ class WordUploadHandler(BaseHTTPRequestHandler):
                 parsed["file"] = safe_name
                 results.append(parsed)
             except Exception as exc:  # noqa: BLE001
-                results.append(
-                    {
-                        "file": safe_name,
-                        "status": "error",
-                        "reason": f"解析失败: {exc}",
-                        "pages": [],
-                    }
-                )
+                results.append({"file": safe_name, "status": "error", "reason": f"解析失败: {exc}", "pages": []})
 
         output_name = "latest_result.json"
         output_path = OUTPUT_DIR / output_name
-        output_path.write_text(
-            json.dumps(
-                {
-                    "total_files": len(results),
-                    "results": results,
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            encoding="utf-8",
-        )
-
-        self._redirect_with_message(
-            f"处理完成：{len(results)} 个文件，结果已写入 {output_path}",
-            output_name,
-        )
+        output_path.write_text(json.dumps({"total_files": len(results), "results": results}, ensure_ascii=False, indent=2), encoding="utf-8")
+        self._redirect_with_message(f"处理完成：{len(results)} 个文件，结果已写入 {output_path}", output_name)
 
     def _extract_uploaded_files(self, body: bytes, content_type: str) -> list[tuple[str, bytes]]:
         boundary_key = "boundary="
@@ -291,9 +356,7 @@ class WordUploadHandler(BaseHTTPRequestHandler):
                 continue
 
             headers = part[:header_end]
-            payload = part[header_end + 4 :]
-            payload = payload.rstrip(b"\r\n")
-
+            payload = part[header_end + 4 :].rstrip(b"\r\n")
             marker = b'filename="'
             marker_idx = headers.find(marker)
             if marker_idx == -1:
@@ -328,7 +391,6 @@ def build_redirect_location(message: str, result_name: str) -> str:
 
 def run_server(host: str = "0.0.0.0", port: int = 8000, open_browser: bool = False) -> None:
     print(f"Starting server at http://{host}:{port}")
-
     if open_browser:
         browse_host = "127.0.0.1" if host == "0.0.0.0" else host
         browse_url = f"http://{browse_host}:{port}"
@@ -343,11 +405,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a minimal Word upload demo server.")
     parser.add_argument("--host", default="0.0.0.0", help="Host to bind, default: 0.0.0.0")
     parser.add_argument("--port", type=int, default=8000, help="Port to bind, default: 8000")
-    parser.add_argument(
-        "--open-browser",
-        action="store_true",
-        help="Automatically open default browser after server starts.",
-    )
+    parser.add_argument("--open-browser", action="store_true", help="Automatically open default browser after server starts.")
     return parser.parse_args()
 
 

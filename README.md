@@ -1,103 +1,70 @@
-# SmartPPT - Word 上传与分页解析（V1 无训练版）
+# SmartPPT - 讲师式知识点分页引擎（V2）
 
-这个版本已经支持：
+当前版本目标：从“字数分页”升级为“知识点分页”。
 
-1. 上传 Word 文档后立即解析文本（V1）
-2. 输出分页结果 JSON（每页 `title` / `content` / `char_count` / `page_no`）
-3. 单次上传窗口支持多文件（最多 50 份，可用于 20~50 份验收）
+## 现在支持什么
 
-## 训练是否必须？
+- 上传后立即解析 `.docx` 文本并分页（`.doc` 标记 unsupported）。
+- 单次批量上传最多 50 份（适合你 20~50 份验收）。
+- 输出结构化 JSON：`page_type/topic/bullets/quotes/evidence/quality_score`。
 
-- **V1 不需要训练**：使用规则提取+分页即可跑通验收。
-- 当你后续要做“语义分页、风格统一、行业模板强约束”时，再考虑模型微调。
+## V2 分页规则（更细腻）
 
-## 方案一（推荐）：GitHub Codespaces（不碰本地 CMD）
+1. **标题强切页**
+   - `一、二、三...`、`1.`、短标题冒号（如 `建安风骨：...`）会强制新页。
+2. **人物切换切页**
+   - 检测 `X作为... / X是... / X则是...`（X 为 2~3 字中文名），切成独立人物页。
+3. **诗句/引文单独页**
+   - 命中引号诗句或短句诗行模式，优先拆成 `quote` 页。
+4. **字数/要点兜底**
+   - 超过阈值会自动续页（不再作为主策略，只兜底）。
 
-1. 打开仓库 → `Code` → `Codespaces` → `Create codespace`。
-2. 在浏览器里的终端运行：
-
-```bash
-python word_upload_demo.py --open-browser
-```
-
-3. 打开转发端口 `8000`，即可看到上传页。
-
-## 方案二（Windows 双击启动）
-
-双击 `start_demo.bat`，会自动启动服务并打开浏览器。
-
-## 本地手动运行（开发者）
-
-### Windows
-
-```cmd
-python word_upload_demo.py --open-browser
-```
-
-或：
-
-```cmd
-py -3 word_upload_demo.py --open-browser
-```
-
-### macOS / Linux
-
-```bash
-python3 word_upload_demo.py --open-browser
-```
-
-## 使用说明（20~50 份验收）
-
-1. 打开页面 `http://localhost:8000`
-2. 点击文件框，按住 `Ctrl`/`Shift`（macOS 用 `Command`）多选文档
-3. 一次上传 20~50 份（上限 50）
-4. 页面会展示最近一次解析 JSON
-5. 同时结果会落盘到 `outputs/latest_result.json`
-
-## 输出 JSON 结构（示例）
+## 输出结构（示例）
 
 ```json
 {
-  "total_files": 2,
-  "results": [
-    {
-      "file": "sample.docx",
-      "status": "ok",
-      "total_pages": 2,
-      "total_chars": 1234,
-      "pages": [
-        {
-          "page_no": 1,
-          "title": "第一章",
-          "content": "...",
-          "char_count": 580
-        }
-      ]
-    }
-  ]
+  "page_no": 2,
+  "page_type": "person_profile",
+  "title": "曹操：核心知识点",
+  "topic": "曹操",
+  "bullets": ["现实关怀", "风格沉郁雄健"],
+  "quotes": ["老骥伏枥，志在千里"],
+  "evidence": {"signals": ["person_switch", "quote_block"], "source_chunks": [6, 7]},
+  "quality_score": 92
 }
 ```
 
-## 当前 V1 边界
+## 如何上传你“已分段/带注释”的 20~50 份文档
 
-- `.docx`：支持解析与分页。
-- `.doc`：会接收，但 V1 仅标记为 `unsupported`（建议先转 `.docx`）。
+1. 打开页面 `http://localhost:8000`
+2. 文件框一次多选（Ctrl/Shift 或 macOS Command）
+3. 直接提交（上限 50）
 
-## 常见问题
+建议：
+- 你的“分段标题”尽量用 Word 标题样式（Heading1/2/3）或规范标题文本（如“一、...”），会显著提升分页质量。
+- 批注/修订本版不专门抽取，主要用于正文知识点分页。
 
-### 1) 为什么之前会报 `UnicodeEncodeError`？
+## 调参（一次把引擎设计对）
 
-原因是上传后 303 跳转的 `Location` 头里包含了中文提示文本。`http.server` 在发送 header 时按 latin-1 编码，中文会触发编码错误。
+`word_upload_demo.py` 的 `EngineConfig` 可调：
 
-本版本已修复：对跳转查询参数做 URL 编码，保证 `Location` 头只包含 ASCII。
+- `max_chars_per_page`：单页最大字数
+- `max_bullets_per_page`：单页 bullet 上限
+- `short_title_char_limit`：短标题冒号识别阈值
 
-### 2) 我这 20~50 份文档是“做过分段和注释”的，怎么上传？
+你可以按课程类型出不同 preset（历史课更细，技术课更密）。
 
-直接在上传窗口多选后一次提交即可（支持最多 50 份）。
+## 运行
 
-- 你做过的“分段”如果体现在 **标题样式（Heading1/2/3）**，V1 会把它识别成分页标题。
-- 普通正文按长度自动分页。
-- 批注/修订这类注释信息，V1 目前不做专门提取（先以正文分页验收为主）。
+### 浏览器优先（Codespaces / 本地都可）
+
+```bash
+python word_upload_demo.py --open-browser
+```
+
+### Windows 双击
+
+双击 `start_demo.bat`。
 
 ## 测试
 
