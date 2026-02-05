@@ -1,111 +1,88 @@
 # SmartPPT - Word 上传最小演示单元
 
-这是一个最小可运行 demo，用于先验证「能否上传 Word 文档」。
+你现在的核心诉求是：**不要本地 CMD/终端，点开就能用**。下面给你 3 个路径（从最省事到正式产品化）。
 
-## 先解释你在 GitHub 页面看到的问题
+## 方案一（最推荐）：GitHub Codespaces（完全不碰本地 CMD）
 
-你看到仓库页面还是：
+一句话：**在浏览器里启动 Python 服务并打开上传页**。
 
-- `Add a README`
-- `No releases published`
+### 你会得到什么
+- 不需要本地安装 Python
+- 不需要打开你电脑上的 CMD / PowerShell
+- 全程在 GitHub 网页里完成
 
-通常是因为你当前查看的是 **main 分支**，而本次改动在工作分支（例如 `work`）上，还没有合并到 main。
+### 操作步骤
+1. 打开本仓库 GitHub 页面。
+2. 点击 `Code` → `Codespaces` → `Create codespace on work`（或你的工作分支）。
+3. 等待 1～2 分钟进入网页版 VS Code。
+4. 在 **浏览器里的终端**（不是你本地 CMD）执行：
 
-### 怎么确认
-
-1. 在 GitHub 左上角分支下拉框，切换到 `work`（或你的 PR 分支）看是否能看到 `README.md`。
-2. 打开 Pull Request，确认是否已经 **Merge** 到 main。
-3. 合并后再切回 main，README 就会显示在仓库首页。
-
-> `Releases` 是“版本发布”功能，和是否能打开上传网页不是一回事；不创建 release 也完全可以本地跑起来测试。
-
-## 1) 运行服务
-
-### Windows（推荐先看）
-
-你刚才输入的是：
-
-```cmd
-Python 3 word_upload_demo.py
+```bash
+python word_upload_demo.py --open-browser
 ```
 
-这里 `Python` 和 `3` 被当成了两个参数，所以 Python 会把 `3` 当作文件名，才会出现：
+5. Codespaces 会提示端口转发（8000），点击 `Open in Browser` 即可看到上传页。
 
-- `can't open file 'C:\\Users\\...\\3'`
+> 本项目 demo 基于 Python 标准库，无需额外 `pip install`。
 
-请改为下面任意一种（**中间不要有空格 `Python 3`**）：
+---
 
-```cmd
-python word_upload_demo.py
-```
+## 方案二（本机“点开就用”）：双击 `start_demo.bat`（Windows）
 
-或：
+如果你希望在本机上也尽量“零命令”：
 
-```cmd
-py -3 word_upload_demo.py
-```
+1. 确保电脑安装了 Python 3。
+2. 在项目目录双击 `start_demo.bat`。
+3. 它会自动：
+   - 启动上传服务
+   - 自动打开浏览器到上传页面
 
-想要自动弹出浏览器窗口（更省事）：
+> 这仍然是本机运行，但你不需要手动输入命令。
+
+---
+
+## 方案三（正式产品化）：部署在线地址（Render/Railway/Fly.io）
+
+一句话：把 demo 部署成公网网页，任何人直接打开链接上传。
+
+适合场景：
+- 给非技术同事使用
+- 对外演示
+- 不希望每次都启动本地服务
+
+建议下一步：我可以直接帮你补一份最小部署配置（例如 Render），让你一键发布。
+
+---
+
+## 本地手动方式（保留给开发者）
+
+### Windows
 
 ```cmd
 python word_upload_demo.py --open-browser
 ```
 
-如果你当前目录不是项目目录，请先切到脚本所在目录再执行：
+或：
 
 ```cmd
-cd /d D:\your\project\smartppt
-python word_upload_demo.py
+py -3 word_upload_demo.py --open-browser
 ```
 
 ### macOS / Linux
 
 ```bash
-python3 word_upload_demo.py
-```
-
-自动打开浏览器：
-
-```bash
 python3 word_upload_demo.py --open-browser
 ```
 
-默认监听 `http://localhost:8000`。
+默认地址为 `http://localhost:8000`。
 
-## 2) 浏览器测试
+---
 
-打开：
+## 上传与测试
 
-- `http://localhost:8000`
-
-选择一个 `.doc` 或 `.docx` 文件并上传。上传成功后，文件会写入本地 `uploads/` 目录。
-
-## 3) 命令行快速测试（可选）
-
-Windows PowerShell：
-
-```powershell
-curl -F "file=@C:/path/to/your/test.docx" http://localhost:8000
-```
-
-macOS / Linux：
-
-```bash
-curl -F "file=@/path/to/your/test.docx" http://localhost:8000
-```
-
-## 4) 单元测试
-
-Windows：
-
-```cmd
-python -m unittest -v
-```
-
-macOS / Linux：
+- 页面选择 `.doc` / `.docx` 上传，成功后文件会写入 `uploads/`。
+- 单元测试（可选）：
 
 ```bash
 python3 -m unittest -v
 ```
-
-当前单元测试覆盖：文件扩展名校验函数 `is_allowed_word_file`。
