@@ -20,8 +20,11 @@ jobs:
         with:
           python-version: '3.12'
 
+<<<<<<< codex/test-.gitkeep-usage-may93s
       - name: Syntax check
         run: python3 -m py_compile word_upload_demo.py test_word_upload_demo.py
 
+=======
+>>>>>>> main
       - name: Run unit tests
         run: python3 -m unittest -v
