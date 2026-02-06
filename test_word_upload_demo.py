@@ -16,9 +16,6 @@ from word_upload_demo import (
     paginate_blocks,
     split_to_bullets,
 )
-import unittest
-
-from word_upload_demo import is_allowed_word_file
 
 
 class TestWordFileValidation(unittest.TestCase):
