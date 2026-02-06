@@ -1,0 +1,30 @@
+name: Python Package using Conda
+
+on:
+  push:
+    branches:
+      - main
+      - work
+      - 'codex/**'
+  pull_request:
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Miniconda
+        uses: conda-incubator/setup-miniconda@v3
+        with:
+          auto-update-conda: true
+          python-version: '3.12'
+          activate-environment: test-env
+
+      - name: Syntax check
+        shell: bash -l {0}
+        run: python -m py_compile word_upload_demo.py test_word_upload_demo.py
+
+      - name: Run unit tests
+        shell: bash -l {0}
+        run: python -m unittest -v
