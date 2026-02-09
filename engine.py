@@ -171,12 +171,61 @@ def _new_page(title: str, page_type: str, topic: str = "", first_signal: str = "
 
 
 def _finalize_page(p: dict[str, Any]) -> dict[str, Any]:
-    lines = []
+    lines: list[str] = []
     lines.extend(p["bullets"])
     lines.extend(p["quotes"])
     p["content"] = "\n".join(lines).strip()
     p["char_count"] = len(p["content"])
     return p
+
+
+def _projected_len(p: dict[str, Any]) -> int:
+    return len("\n".join(p["bullets"] + p["quotes"]).strip())
+
+
+def _split_long_text(s: str, max_len: int) -> list[str]:
+    """
+    极端兜底：单条 bullet/quote 本身就超过 max_len。
+    不做“智能改写”，只做硬切片，保证 char_count 不超标。
+    """
+    s = s.strip()
+    if not s:
+        return []
+    if len(s) <= max_len:
+        return [s]
+    chunks = []
+    i = 0
+    while i < len(s):
+        chunks.append(s[i : i + max_len])
+        i += max_len
+    return chunks
+
+
+def _append_bullet_with_limit(pages: list[dict[str, Any]], cur: dict[str, Any], bullet: str, rules: Rules) -> dict[str, Any]:
+    # 如果 bullet 本身超长，先切片
+    for piece in _split_long_text(bullet, rules.max_chars_per_page):
+        cur["bullets"].append(piece)
+        if _projected_len(cur) > rules.max_chars_per_page:
+            # 回退这条，先落盘当前页，再开新页放进去
+            cur["bullets"].pop()
+            pages.append(_finalize_page(cur))
+            nxt_title = f"{cur.get('title', '知识点')}（续）"
+            cur = _new_page(nxt_title, cur.get("page_type", "bullets"), topic=cur.get("topic", ""), first_signal="char_limit")
+            cur["evidence"]["split_reason"].append("char_limit")
+            cur["bullets"].append(piece)
+    return cur
+
+
+def _append_quote_with_limit(pages: list[dict[str, Any]], cur: dict[str, Any], quote: str, rules: Rules) -> dict[str, Any]:
+    for piece in _split_long_text(quote, rules.max_chars_per_page):
+        cur["quotes"].append(piece)
+        if _projected_len(cur) > rules.max_chars_per_page:
+            cur["quotes"].pop()
+            pages.append(_finalize_page(cur))
+            cur = _new_page("引用（续）", "quote", topic=cur.get("topic", ""), first_signal="char_limit")
+            cur["evidence"]["split_reason"].append("char_limit")
+            cur["quotes"].append(piece)
+    return cur
 
 
 def _paginate(blocks: list[str], rules: Rules) -> list[dict[str, Any]]:
@@ -188,37 +237,40 @@ def _paginate(blocks: list[str], rules: Rules) -> list[dict[str, Any]]:
         if not text:
             continue
 
+        # 章节页：只展示标题，不排版；并切断上下文
         if _is_section_title(text):
             if cur["bullets"] or cur["quotes"] or cur["page_type"] != "teacher_only":
                 pages.append(_finalize_page(cur))
-            cur = _new_page(text, "section_page", topic=text.split("：", 1)[0], first_signal="section")
-            pages.append(_finalize_page(cur))
+
+            sec = _new_page(text, "section_page", topic=text.split("：", 1)[0], first_signal="section")
+            pages.append(_finalize_page(sec))
+
             cur = _new_page("开场", "teacher_only", topic="", first_signal="after_section")
             continue
 
+        # 引用页：尽量独立
         if _is_quote_line(text):
-            if cur["bullets"]:
+            if cur["bullets"] and cur["page_type"] != "quote":
                 pages.append(_finalize_page(cur))
                 cur = _new_page("引用", "quote", topic=cur.get("topic", ""), first_signal="quote_block")
-            cur["quotes"].append(text)
+
             cur["evidence"]["signals"].append("quote_block")
-            if cur["char_count"] > rules.max_chars_per_page:
-                pages.append(_finalize_page(cur))
-                cur = _new_page("引用（续）", "quote", topic=cur.get("topic", ""), first_signal="char_limit")
+            cur = _append_quote_with_limit(pages, cur, text, rules)
             continue
 
+        # 老师出镜/寒暄页
         if _looks_teacher_only(text, rules):
             if cur["page_type"] != "teacher_only" and (cur["bullets"] or cur["quotes"]):
                 pages.append(_finalize_page(cur))
                 cur = _new_page("老师出镜", "teacher_only", topic="", first_signal="teacher_only")
+
             for b in _split_to_bullets(text):
-                cur["bullets"].append(b)
-                if cur["char_count"] > rules.max_chars_per_page:
-                    pages.append(_finalize_page(cur))
-                    cur = _new_page("老师出镜（续）", "teacher_only", topic="", first_signal="char_limit")
+                cur = _append_bullet_with_limit(pages, cur, b, rules)
             continue
 
+        # 知识点页
         for b in _split_to_bullets(text):
+            # 不相关尽量拆页（轻量相似度）
             if rules.topic_split_enabled and cur["bullets"]:
                 sim = _avg_similarity_to_page(b, cur["bullets"])
                 if sim < rules.similarity_threshold:
@@ -226,15 +278,14 @@ def _paginate(blocks: list[str], rules: Rules) -> list[dict[str, Any]]:
                     cur = _new_page("知识点", "bullets", topic=cur.get("topic", ""), first_signal="topic_diverge")
                     cur["evidence"]["split_reason"].append("topic_diverge")
 
-            cur["bullets"].append(b)
-            if cur["char_count"] > rules.max_chars_per_page:
-                cur["bullets"].pop()
+            if cur["page_type"] == "teacher_only":
+                # 从老师出镜进入知识点
                 pages.append(_finalize_page(cur))
-                cur = _new_page("知识点（续）", "bullets", topic=cur.get("topic", ""), first_signal="char_limit")
-                cur["evidence"]["split_reason"].append("char_limit")
-                cur["bullets"].append(b)
+                cur = _new_page("知识点", "bullets", topic="", first_signal="enter_knowledge")
 
-    if cur["bullets"] or cur["quotes"]:
+            cur = _append_bullet_with_limit(pages, cur, b, rules)
+
+    if cur["bullets"] or cur["quotes"] or cur["page_type"] in ("section_page", "teacher_only", "quote"):
         pages.append(_finalize_page(cur))
 
     for i, p in enumerate(pages, start=1):
