@@ -79,8 +79,13 @@ def paginate_and_classify(text: str, rules_dict: dict[str, Any] | None = None) -
     blocks = _split_to_blocks(text)
     pages = _paginate(blocks, rules)
 
+    # 先根据知识点数量等规则给出初始 layout
     for p in pages:
         p["layout"] = _choose_layout(p, rules)
+
+    # 产品级约束：限制同一 layout 的连续次数、避免连续老师出镜
+    enforce_layout_run_limit(pages, max_run=4)
+    enforce_no_consecutive_teacher_only(pages)
 
     stats = {
         "total_pages": len(pages),
@@ -316,5 +321,111 @@ def _choose_layout(page: dict[str, Any], rules: Rules) -> str:
         return "半屏"
 
     return "半屏"
+
+
+def _allowed_layouts_for_page(page: dict[str, Any]) -> list[str]:
+    """
+    给每页定义“允许的替代版式”，保证不会胡乱换。
+    - bullets>=6：全屏优先，但允许降到小头像
+    - bullets 4-5：小头像优先，但允许半屏
+    - bullets 1-3：半屏优先，但允许小头像
+    - bullets==0：老师出镜（不参与本函数）
+    """
+    layout = page.get("layout", "")
+    pt = page.get("page_type", "")
+    if pt in ("teacher_only", "section_page", "title_page"):
+        return [layout]
+
+    bullets = len(page.get("bullets", []))
+    if bullets >= 6:
+        return ["全屏", "小头像"]
+    if 4 <= bullets <= 5:
+        return ["小头像", "半屏"]
+    if 1 <= bullets <= 3:
+        return ["半屏", "小头像"]
+    return [layout]
+
+
+def enforce_layout_run_limit(pages: list[dict[str, Any]], max_run: int = 4) -> None:
+    """
+    产品级约束：
+    - 全屏/半屏/小头像 任一 layout 连续不得超过 max_run 次。
+    策略：
+    - 当某个 layout 已连续达到 max_run，再遇到同 layout：
+      尝试把当前页切换到它的“允许替代版式”中的另一个。
+    """
+    tracked = {"全屏", "半屏", "小头像"}
+
+    run_layout: str | None = None
+    run_len = 0
+
+    for p in pages:
+        layout = p.get("layout", "")
+        pt = p.get("page_type", "")
+
+        # 章节页 / 标题页 / 老师出镜：不计入连续次数
+        if pt in ("teacher_only", "section_page", "title_page"):
+            run_layout = None
+            run_len = 0
+            continue
+
+        if layout not in tracked:
+            run_layout = None
+            run_len = 0
+            continue
+
+        if layout == run_layout:
+            run_len += 1
+        else:
+            run_layout = layout
+            run_len = 1
+
+        if run_len <= max_run:
+            continue
+
+        # 超过 max_run：尝试换版式（在允许集合内换）
+        allowed = _allowed_layouts_for_page(p)
+        alt = next((x for x in allowed if x != layout), None)
+
+        if alt:
+            p["layout"] = alt
+            p.setdefault("evidence", {}).setdefault("signals", []).append("layout_run_break")
+            p.setdefault("evidence", {}).setdefault("split_reason", []).append(f"layout_run>{max_run}")
+            # 换完之后，从新 layout 重新开始计数
+            run_layout = alt
+            run_len = 1
+        else:
+            # 没有可替代 layout，保留原样并记录
+            p.setdefault("evidence", {}).setdefault("signals", []).append("layout_run_break_failed")
+
+
+def enforce_no_consecutive_teacher_only(pages: list[dict[str, Any]]) -> None:
+    """
+    产品级约束：
+    - 不允许连续两页 page_type == teacher_only。
+    策略：
+    - 如果出现连续 teacher_only：
+      * 若当前页有内容（bullets/quotes），则降级为知识点页（半屏）
+      * 若无内容，则保留老师出镜，但记录信号（极端兜底）
+    """
+    for i in range(1, len(pages)):
+        prev = pages[i - 1]
+        cur = pages[i]
+
+        if prev.get("page_type") == "teacher_only" and cur.get("page_type") == "teacher_only":
+            has_content = bool(cur.get("bullets") or cur.get("quotes"))
+            cur.setdefault("evidence", {}).setdefault("signals", [])
+            cur.setdefault("evidence", {}).setdefault("split_reason", [])
+
+            if has_content:
+                # 降级为普通知识点页，默认半屏
+                cur["page_type"] = "bullets"
+                cur["layout"] = "半屏"
+                cur["evidence"]["signals"].append("downgrade_from_teacher_only")
+                cur["evidence"]["split_reason"].append("no_consecutive_teacher_only")
+            else:
+                # 极端情况：空老师页，保留但打标
+                cur["layout"] = "老师出镜"
+                cur["evidence"]["signals"].append("teacher_only_keep_empty")
 
 

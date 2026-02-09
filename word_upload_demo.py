@@ -17,7 +17,7 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 from xml.etree import ElementTree as ET
 
-from engine import paginate_and_classify
+from engine import load_rules, paginate_and_classify
 
 
 # -----------------------------
@@ -347,6 +347,66 @@ def build_report(results: list[dict], metadata: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def build_product_snapshot(metadata: dict[str, str], latest_result_path: Path) -> dict:
+    """
+    产品状态快照，用于快速确认当前“引擎 + 规则 + 输出健康度”。
+    """
+    rules = load_rules()
+
+    # 默认健康检查结果（如果 latest_result.json 不存在，就认为尚未通过验证）
+    health = {
+        "all_pages_under_150": False,
+        "all_pages_have_layout": False,
+        "section_pages_title_only": False,
+    }
+
+    if latest_result_path.exists():
+        try:
+            data = json.loads(latest_result_path.read_text(encoding="utf-8"))
+            # 兼容单文件和多文件结果结构
+            results = data.get("results", [])
+            pages: list[dict] = []
+            for item in results:
+                pages.extend(item.get("pages", []))
+
+            if pages:
+                # 所有页字数不超过规则上限
+                health["all_pages_under_150"] = all(
+                    p.get("char_count", 0) <= rules.max_chars_per_page for p in pages
+                )
+                # 每页是否都有 layout 字段
+                health["all_pages_have_layout"] = all("layout" in p and p["layout"] for p in pages)
+                # 章节页是否“标题页专用”（不带 bullets/quotes）
+                section_pages = [
+                    p
+                    for p in pages
+                    if p.get("page_type") in ("section_page", "section_cover")
+                ]
+                health["section_pages_title_only"] = all(
+                    not p.get("bullets") and not p.get("quotes") for p in section_pages
+                ) if section_pages else True
+        except Exception:
+            # latest_result.json 结构异常时，保持默认 False，方便排查
+            pass
+
+    snapshot = {
+        "engine_version": rules.version,
+        "git_commit": metadata.get("git_sha", ""),
+        "rules": {
+            "max_chars_per_page": rules.max_chars_per_page,
+            "layout_mapping": {
+                f"{rules.full_screen_min}+": "全屏",
+                f"{rules.small_avatar_min}-{rules.small_avatar_max}": "小头像",
+                f"{rules.half_screen_min}-{rules.half_screen_max}": "半屏",
+                "0": "老师出镜",
+            },
+        },
+        "latest_result": str(latest_result_path.as_posix()),
+        "healthcheck": health,
+    }
+    return snapshot
+
+
 # -----------------------------
 # HTTP server
 # -----------------------------
@@ -474,6 +534,11 @@ class WordUploadHandler(BaseHTTPRequestHandler):
 
         report_path = OUTPUT_DIR / "latest_report.txt"
         report_path.write_text(build_report(results, metadata), encoding="utf-8")
+
+        # 生成/更新产品状态快照（放在项目根目录）
+        snapshot = build_product_snapshot(metadata, output_path)
+        snapshot_path = Path("product_snapshot.json")
+        snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
 
         self._redirect_with_message(f"处理完成：{len(results)} 个文件，结果已写入 {output_path}", output_name)
 
