@@ -1,0 +1,39 @@
+engine:
+  version: "v2.6"
+  max_chars_per_page: 150
+
+layout:
+  # 特殊页类型优先级最高
+  title_page: "标题页"        # 不排版（title only）
+  section_page: "章节页"      # 只展示章节标题（title only）
+  teacher_only: "老师出镜"    # 无知识点/寒暄
+
+  # 按知识点数量（bullets 数）进行版式匹配
+  full_screen:
+    min_bullets: 6            # 知识点多
+  small_avatar:
+    min_bullets: 4            # 次多
+    max_bullets: 5
+  half_screen:
+    min_bullets: 1            # 少
+    max_bullets: 3
+
+topic_split:
+  enabled: true
+  # 不相关尽量分开：简单 Jaccard 相似度，低于阈值就新开页
+  similarity_threshold: 0.58
+
+heuristics:
+  # 判定“老师出镜/寒暄”的关键词（可继续补充）
+  teacher_only_keywords:
+    - "大家好"
+    - "同学们"
+    - "我们今天"
+    - "今天咱们"
+    - "欢迎"
+    - "接下来"
+    - "首先"
+    - "最后"
+    - "希望大家"
+
+
