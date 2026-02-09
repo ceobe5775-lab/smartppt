@@ -17,6 +17,8 @@ from pathlib import Path
 from urllib.parse import parse_qs, urlencode, urlparse
 from xml.etree import ElementTree as ET
 
+from engine import paginate_and_classify
+
 
 # -----------------------------
 # Constants & basic config
@@ -287,8 +289,27 @@ def parse_and_paginate_word(file_path: Path) -> dict:
             "pages": [],
         }
 
+    # 先用旧的提取逻辑把段落抽出来
     blocks = extract_docx_paragraphs(file_path)
-    pages = paginate_blocks(blocks)
+    # 拼成纯文本给 engine 统一分页（走 rules.yaml + 150 字规则）
+    plain_text = "\n".join(b.text for b in blocks)
+
+    engine_result = paginate_and_classify(plain_text, None)
+    pages = engine_result["pages"]
+
+    # 为了兼容现有质量评分和统计逻辑，这里补充 quality_score 字段
+    for page in pages:
+        # 如果后面需要更细的评分，可以在 score_page 内部再调参数
+        page["quality_score"] = score_page(
+            {
+                "char_count": page.get("char_count", 0),
+                "bullets": page.get("bullets", []),
+                "quotes": page.get("quotes", []),
+                "page_type": page.get("page_type", ""),
+                "topic": page.get("topic", ""),
+            }
+        )
+
     return {
         "status": "ok",
         "reason": "",
