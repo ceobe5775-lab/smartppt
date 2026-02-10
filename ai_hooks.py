@@ -13,6 +13,9 @@ AI 判定层 Hook（最小骨架）
 - 置信度不足 / 调用异常 / 返回非法值时，engine 必须回退到规则层逻辑。
 """
 
+import json
+import os
+import urllib.request
 from typing import Any, Literal, TypedDict
 
 
@@ -27,16 +30,39 @@ class AIClassifyResult(TypedDict, total=False):
 
 def ai_classify(text: str) -> AIClassifyResult:
     """
-    占位实现：默认不使用 AI，完全交回规则层处理。
+    HTTP 调用实现（仅用标准库，无需安装第三方依赖）。
 
-    你后续只需要把这里替换为对自家服务的 HTTP 调用，约定返回字段不变：
+    你只需要把默认地址里的 "https://your-ai-host/intent-anchor"
+    替换成你们真实的服务地址，或设置环境变量 AI_CLASSIFY_ENDPOINT。
+
+    约定返回字段不变：
     {
       "intent": "SHOW" | "SUPPORT" | "SAY",
       "is_anchor": true | false,
       "confidence": 0.0 ~ 1.0
     }
     """
-    return AIClassifyResult()  # 空结果 → 由 safe_ai_classify 触发回退
+    endpoint = os.getenv("AI_CLASSIFY_ENDPOINT", "https://your-ai-host/intent-anchor").strip()
+    if not endpoint:
+        return AIClassifyResult()
+
+    payload = json.dumps({"text": text}).encode("utf-8")
+    req = urllib.request.Request(
+        endpoint,
+        data=payload,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        method="POST",
+    )
+    # 超时、解析失败等异常由 safe_ai_classify 捕获并回退规则
+    with urllib.request.urlopen(req, timeout=2.0) as resp:  # noqa: S310
+        body = resp.read().decode("utf-8", errors="replace")
+    data = json.loads(body) or {}
+
+    return AIClassifyResult(
+        intent=data.get("intent"),
+        is_anchor=bool(data.get("is_anchor", False)),
+        confidence=float(data.get("confidence", 0.0) or 0.0),
+    )
 
 
 def safe_ai_classify(text: str, *, min_confidence: float = 0.6) -> tuple[Intent | None, bool]:
