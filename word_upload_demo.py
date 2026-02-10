@@ -193,6 +193,38 @@ def finalize_page(page: dict) -> dict:
     return page
 
 
+# -----------------------------
+# Product-level hard constraints
+# -----------------------------
+def prune_empty_pages(pages: list[dict]) -> list[dict]:
+    """
+    产品级硬过滤器（必须写死）：
+    除 标题页 / 章节页 外：
+    如果 bullets + quotes + content 为空 -> 整页直接删除，不允许出现。
+    """
+    kept: list[dict] = []
+    for p in pages:
+        if p.get("layout") in ("标题页", "章节页"):
+            kept.append(p)
+            continue
+
+        has_text = bool(
+            p.get("bullets")
+            or p.get("quotes")
+            or (p.get("content") and str(p.get("content")).strip())
+        )
+        if not has_text:
+            continue  # ❌ 直接丢掉
+        kept.append(p)
+    return kept
+
+
+def renumber_page_no(pages: list[dict]) -> list[dict]:
+    for i, p in enumerate(pages, start=1):
+        p["page_no"] = i
+    return pages
+
+
 def score_page(page: dict) -> int:
     score = 100
     if page["char_count"] > ENGINE_CONFIG.max_chars_per_page:
@@ -347,6 +379,66 @@ def build_report(results: list[dict], metadata: dict[str, str]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def compute_health_for_pages(pages: list[dict]) -> dict:
+    """
+    基于单次解析得到的 pages 做健康度检查。
+    """
+    rules = load_rules()
+
+    all_under_limit = all(p.get("char_count", 0) <= rules.max_chars_per_page for p in pages)
+    all_have_layout = all(p.get("layout") for p in pages)
+
+    # 老师出镜不连续
+    no_consecutive_teacher_only = True
+    for i in range(1, len(pages)):
+        if pages[i - 1].get("page_type") == "teacher_only" and pages[i].get("page_type") == "teacher_only":
+            no_consecutive_teacher_only = False
+            break
+
+    # layout 连续不超过 4（仅统计全屏/半屏/小头像，老师出镜 & 章节页不计入）
+    tracked = {"全屏", "半屏", "小头像"}
+    no_layout_run_over_4 = True
+    run_layout: str | None = None
+    run_len = 0
+    for p in pages:
+        layout = p.get("layout", "")
+        pt = p.get("page_type", "")
+
+        if pt in ("teacher_only", "section_page", "title_page"):
+            run_layout = None
+            run_len = 0
+            continue
+
+        if layout not in tracked:
+            run_layout = None
+            run_len = 0
+            continue
+
+        if layout == run_layout:
+            run_len += 1
+        else:
+            run_layout = layout
+            run_len = 1
+
+        if run_len > 4:
+            no_layout_run_over_4 = False
+            break
+
+    # 章节页是否只展示标题（不带 bullets/quotes）
+    section_pages = [p for p in pages if p.get("page_type") in ("section_page", "section_cover")]
+    section_title_only = all(
+        not p.get("bullets") and not p.get("quotes") for p in section_pages
+    ) if section_pages else True
+
+    return {
+        "all_pages_under_150": all_under_limit,
+        "all_pages_have_layout": all_have_layout,
+        "no_consecutive_teacher_only": no_consecutive_teacher_only,
+        "no_layout_run_over_4": no_layout_run_over_4,
+        "section_pages_title_only": section_title_only,
+    }
+
+
 def build_product_snapshot(metadata: dict[str, str], latest_result_path: Path) -> dict:
     """
     产品状态快照，用于快速确认当前“引擎 + 规则 + 输出健康度”。
@@ -357,36 +449,23 @@ def build_product_snapshot(metadata: dict[str, str], latest_result_path: Path) -
     health = {
         "all_pages_under_150": False,
         "all_pages_have_layout": False,
+        "no_consecutive_teacher_only": False,
+        "no_layout_run_over_4": False,
         "section_pages_title_only": False,
     }
 
     if latest_result_path.exists():
         try:
             data = json.loads(latest_result_path.read_text(encoding="utf-8"))
-            # 兼容单文件和多文件结果结构
             results = data.get("results", [])
             pages: list[dict] = []
             for item in results:
                 pages.extend(item.get("pages", []))
 
             if pages:
-                # 所有页字数不超过规则上限
-                health["all_pages_under_150"] = all(
-                    p.get("char_count", 0) <= rules.max_chars_per_page for p in pages
-                )
-                # 每页是否都有 layout 字段
-                health["all_pages_have_layout"] = all("layout" in p and p["layout"] for p in pages)
-                # 章节页是否“标题页专用”（不带 bullets/quotes）
-                section_pages = [
-                    p
-                    for p in pages
-                    if p.get("page_type") in ("section_page", "section_cover")
-                ]
-                health["section_pages_title_only"] = all(
-                    not p.get("bullets") and not p.get("quotes") for p in section_pages
-                ) if section_pages else True
+                health = compute_health_for_pages(pages)
         except Exception:
-            # latest_result.json 结构异常时，保持默认 False，方便排查
+            # latest_result.json 结构异常时，保持默认值，方便排查
             pass
 
     snapshot = {
@@ -405,6 +484,80 @@ def build_product_snapshot(metadata: dict[str, str], latest_result_path: Path) -
         "healthcheck": health,
     }
     return snapshot
+
+
+def build_preview_html(results: list[dict]) -> str:
+    """
+    基于本次解析结果构建一个简单的 HTML 预览，方便肉眼检查。
+    """
+    lines: list[str] = [
+        "<!doctype html>",
+        "<html lang='zh-CN'>",
+        "<head>",
+        "  <meta charset='utf-8' />",
+        "  <title>SmartPPT 预览</title>",
+        "  <style>",
+        "    body { font-family: Arial, sans-serif; margin: 2rem; }",
+        "    h1 { margin-bottom: 1.5rem; }",
+        "    .file { margin-bottom: 2rem; }",
+        "    .page { border: 1px solid #ddd; padding: 0.75rem 1rem; margin-bottom: 0.5rem; border-radius: 6px; }",
+        "    .layout { font-weight: bold; color: #555; }",
+        "    .meta { color: #888; font-size: 0.9rem; }",
+        "  </style>",
+        "</head>",
+        "<body>",
+        "  <h1>SmartPPT 分页预览</h1>",
+    ]
+
+    for item in results:
+        fname = item.get("file", "<unknown>")
+        pages = item.get("pages", [])
+        health = item.get("healthcheck", {})
+
+        lines.append("  <div class='file'>")
+        lines.append(f"    <h2>文件：{html.escape(fname)}</h2>")
+        if health:
+            lines.append("    <p class='meta'>Healthcheck：")
+            flags = [f"{k}={v}" for k, v in health.items()]
+            lines.append(" | ".join(flags) + "</p>")
+
+        for p in pages:
+            page_no = p.get("page_no", "?")
+            layout = p.get("layout", "")
+            page_type = p.get("page_type", "")
+            char_count = p.get("char_count", 0)
+            bullets = p.get("bullets", [])
+            quotes = p.get("quotes", [])
+            title = p.get("title", "")
+
+            lines.append("    <div class='page'>")
+            lines.append(
+                f"      <div class='layout'>[第 {page_no} 页] "
+                f"{html.escape(layout)} "
+                f"<span class='meta'>({html.escape(page_type)}, {char_count} 字)</span></div>"
+            )
+            if title and page_type in ("section_page", "title_page"):
+                lines.append(f"      <p>标题：{html.escape(title)}</p>")
+
+            if bullets:
+                lines.append("      <ul>")
+                for b in bullets:
+                    lines.append(f"        <li>{html.escape(str(b))}</li>")
+                lines.append("      </ul>")
+
+            if quotes:
+                lines.append("      <blockquote>")
+                for q in quotes:
+                    lines.append(f"        <p>{html.escape(str(q))}</p>")
+                lines.append("      </blockquote>")
+
+            lines.append("    </div>")
+
+        lines.append("  </div>")
+
+    lines.append("</body>")
+    lines.append("</html>")
+    return "\n".join(lines)
 
 
 # -----------------------------
@@ -440,6 +593,7 @@ class WordUploadHandler(BaseHTTPRequestHandler):
   <p class="actions">
     <a href="/download?file=latest_result.json">下载 latest_result.json</a>
     <a href="/download?file=latest_report.txt">下载 latest_report.txt</a>
+    <a href="/download?file=preview.html">查看分页预览（HTML）</a>
   </p>
   <h2>最近一次解析结果（JSON）</h2>
   <pre>{escaped_result}</pre>
@@ -521,11 +675,29 @@ class WordUploadHandler(BaseHTTPRequestHandler):
             try:
                 parsed = parse_and_paginate_word(save_path)
                 parsed["file"] = safe_name
+
+                # 产品级硬过滤：在最终输出前移除“没字但占一页”的非法空页，并重新编号 page_no
+                pages = prune_empty_pages(parsed.get("pages", []))
+                renumber_page_no(pages)
+                parsed["pages"] = pages
+                parsed["total_pages"] = len(pages)
+                parsed["total_chars"] = sum(p.get("char_count", 0) for p in pages)
+                parsed["avg_score"] = round(
+                    (sum(float(p.get("quality_score", 0)) for p in pages) / len(pages)), 2
+                ) if pages else 0
+
                 results.append(parsed)
             except Exception as exc:  # noqa: BLE001
                 results.append({"file": safe_name, "status": "error", "reason": f"解析失败: {exc}", "pages": []})
 
         metadata = build_metadata()
+        # 为每个文件结果补充 stats / healthcheck，方便下游直接使用
+        for item in results:
+            pages = item.get("pages", [])
+            item.setdefault("stats", {})
+            engine_health = compute_health_for_pages(pages) if pages else {}
+            item["healthcheck"] = engine_health
+
         payload = {"metadata": metadata, "total_files": len(results), "results": results}
 
         output_name = "latest_result.json"
@@ -539,6 +711,11 @@ class WordUploadHandler(BaseHTTPRequestHandler):
         snapshot = build_product_snapshot(metadata, output_path)
         snapshot_path = Path("product_snapshot.json")
         snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False, indent=2), encoding="utf-8")
+
+        # 生成预览 HTML，方便肉眼检查分页与版式
+        preview_html = build_preview_html(results)
+        preview_path = OUTPUT_DIR / "preview.html"
+        preview_path.write_text(preview_html, encoding="utf-8")
 
         self._redirect_with_message(f"处理完成：{len(results)} 个文件，结果已写入 {output_path}", output_name)
 
@@ -591,6 +768,8 @@ class WordUploadHandler(BaseHTTPRequestHandler):
         content = candidate.read_bytes()
         if safe_name.endswith(".json"):
             ctype = "application/json; charset=utf-8"
+        elif safe_name.endswith(".html"):
+            ctype = "text/html; charset=utf-8"
         else:
             ctype = "text/plain; charset=utf-8"
 

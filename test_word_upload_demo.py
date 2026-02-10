@@ -13,6 +13,7 @@ from word_upload_demo import (
     is_allowed_word_file,
     is_quote_line,
     is_section_title,
+    prune_empty_pages,
     paginate_blocks,
     split_to_bullets,
 )
@@ -138,6 +139,18 @@ class TestRedirectEncoding(unittest.TestCase):
         location.encode("latin-1")
         self.assertIn("result=latest_result.json", location)
         self.assertFalse(is_allowed_word_file("notes.txt"))
+
+
+class TestProductHardConstraints(unittest.TestCase):
+    def test_prune_empty_pages_drops_non_title_section_empty_pages(self):
+        pages = [
+            {"page_no": 1, "layout": "章节页", "bullets": [], "quotes": [], "content": ""},
+            {"page_no": 2, "layout": "老师出镜", "bullets": [], "quotes": [], "content": ""},
+            {"page_no": 3, "layout": "半屏", "bullets": [], "quotes": [], "content": "   "},
+            {"page_no": 4, "layout": "小头像", "bullets": [], "quotes": ["一句话"], "content": ""},
+        ]
+        kept = prune_empty_pages(pages)
+        self.assertEqual(["章节页", "小头像"], [p["layout"] for p in kept])
 
 
 if __name__ == "__main__":

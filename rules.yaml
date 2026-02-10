@@ -1,6 +1,6 @@
 engine:
   version: "v2.6"
-  max_chars_per_page: 150
+  max_chars_per_page: 180
 
 layout:
   # 特殊页类型优先级最高
@@ -24,7 +24,7 @@ topic_split:
   similarity_threshold: 0.58
 
 heuristics:
-  # 判定“老师出镜/寒暄”的关键词（可继续补充）
+  # 判定"老师出镜/寒暄"的关键词（可继续补充）
   teacher_only_keywords:
     - "大家好"
     - "同学们"
@@ -35,6 +35,48 @@ heuristics:
     - "首先"
     - "最后"
     - "希望大家"
+
+importance:
+  # 无标签时：命中这些词 → 加分（更像该上 PPT 的信息）
+  keep_keywords:
+    - "特点"
+    - "本质"
+    - "核心"
+    - "结论"
+    - "也就是说"
+    - "因此"
+    - "开创"
+    - "贡献"
+    - "代表作"
+    - "分为"
+    - "包括"
+    - "例如"
+    - "比如"
+
+  # 无标签时：命中这些词 → 降分（更像口语/铺垫/可略）
+  drop_keywords:
+    - "大家好"
+    - "我们来看"
+    - "接下来"
+    - "然后"
+    - "简单来说"
+    - "总的来说"
+    - "希望大家"
+    - "今天咱们"
+    - "下面我们"
+
+  # 无标签时：遇到这些模式 → 触发新知识点块（强切分）
+  anchor_patterns:
+    - "^[一二三四五六七八九十]+、"
+    - "^\\d+[\\.、]"
+    - "^[\\u4e00-\\u9fff]{2,4}(?:是|则|主要|以|的)"
+
+thresholds:
+  # 无标签时的分类阈值（分数越高越像知识点）
+  knowledge_min_score: 2
+  teacher_only_max_score: 0
+
+
 
 
 
