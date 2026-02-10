@@ -6,6 +6,8 @@ from typing import Any
 
 import yaml
 
+from ai_hooks import Intent, safe_ai_classify
+
 
 @dataclass(frozen=True)
 class Rules:
@@ -489,6 +491,24 @@ def _paginate(blocks: list[str], rules: Rules) -> list[dict[str, Any]]:
         tag, clean_text = parse_tag(text)
         score = score_line(clean_text, rules.keep_keywords, rules.drop_keywords) if tag is None else 0
         block_type, force_new_topic = classify_block(tag, clean_text, score, rules)
+
+        # 可选的 AI 判定层（仅在无标签时生效）：
+        # - intent: SHOW / SUPPORT / SAY
+        # - is_anchor: 是否建议开启新知识点块
+        ai_intent: Intent | None = None
+        if tag is None:
+            ai_intent, ai_anchor = safe_ai_classify(clean_text)
+            if ai_intent is not None:
+                # 用 intent + is_anchor 对规则分类做“软覆盖”（规则仍然兜底）
+                if ai_intent == "SHOW":
+                    block_type = "knowledge"
+                elif ai_intent == "SUPPORT":
+                    # 默认归为 example，后续会标记 intent=SUPPORT
+                    block_type = "example"
+                elif ai_intent == "SAY":
+                    block_type = "teacher_only"
+                if ai_anchor:
+                    force_new_topic = True
 
         # 如果标签是标题页/章节页，直接处理
         if block_type == "title":
