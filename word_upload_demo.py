@@ -503,6 +503,8 @@ def build_preview_html(results: list[dict]) -> str:
         "    .page { border: 1px solid #ddd; padding: 0.75rem 1rem; margin-bottom: 0.5rem; border-radius: 6px; }",
         "    .layout { font-weight: bold; color: #555; }",
         "    .meta { color: #888; font-size: 0.9rem; }",
+        "    .ppt { color: #d00; font-weight: 600; }",
+        "    .say { color: #222; }",
         "  </style>",
         "</head>",
         "<body>",
@@ -526,9 +528,10 @@ def build_preview_html(results: list[dict]) -> str:
             layout = p.get("layout", "")
             page_type = p.get("page_type", "")
             char_count = p.get("char_count", 0)
+            title = p.get("title", "")
+            items = p.get("items") or []
             bullets = p.get("bullets", [])
             quotes = p.get("quotes", [])
-            title = p.get("title", "")
 
             lines.append("    <div class='page'>")
             lines.append(
@@ -539,17 +542,28 @@ def build_preview_html(results: list[dict]) -> str:
             if title and page_type in ("section_page", "title_page"):
                 lines.append(f"      <p>标题：{html.escape(title)}</p>")
 
-            if bullets:
+            # 优先按 items（带 intent）渲染：SHOW / SUPPORT 标红，其余为常规颜色
+            if items:
                 lines.append("      <ul>")
-                for b in bullets:
-                    lines.append(f"        <li>{html.escape(str(b))}</li>")
+                for it in items:
+                    intent = it.get("intent") or "SAY"
+                    cls = "ppt" if intent in ("SHOW", "SUPPORT") else "say"
+                    text = html.escape(str(it.get("text", "")))
+                    lines.append(f'        <li><span class="{cls}">{text}</span></li>')
                 lines.append("      </ul>")
+            else:
+                # 兼容旧结构：没有 items 时按 bullets/quotes 普通渲染
+                if bullets:
+                    lines.append("      <ul>")
+                    for b in bullets:
+                        lines.append(f"        <li>{html.escape(str(b))}</li>")
+                    lines.append("      </ul>")
 
-            if quotes:
-                lines.append("      <blockquote>")
-                for q in quotes:
-                    lines.append(f"        <p>{html.escape(str(q))}</p>")
-                lines.append("      </blockquote>")
+                if quotes:
+                    lines.append("      <blockquote>")
+                    for q in quotes:
+                        lines.append(f"        <p>{html.escape(str(q))}</p>")
+                    lines.append("      </blockquote>")
 
             lines.append("    </div>")
 

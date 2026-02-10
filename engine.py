@@ -333,6 +333,7 @@ def _new_page(title: str, page_type: str, topic: str = "", first_signal: str = "
         "topic": topic,
         "bullets": [],
         "quotes": [],
+        "items": [],  # [{text, intent}]
         "char_count": 0,
         "content": "",
         "_has_main_anchor": False,  # internal flag: enforce at most 1 main knowledge anchor per page
@@ -346,6 +347,10 @@ def _finalize_page(p: dict[str, Any]) -> dict[str, Any]:
     lines.extend(p["quotes"])
     p["content"] = "\n".join(lines).strip()
     p["char_count"] = len(p["content"])
+    # intent_mix: 该页由哪些展示意图构成（SHOW / SUPPORT / SAY）
+    intents = sorted({it.get("intent") for it in p.get("items", []) if it.get("intent")})
+    if intents:
+        p["intent_mix"] = intents
     # internal flags should not leak to downstream payload
     p.pop("_has_main_anchor", None)
     return p
@@ -426,30 +431,48 @@ def _split_long_text(s: str, max_len: int) -> list[str]:
     return chunks
 
 
-def _append_bullet_with_limit(pages: list[dict[str, Any]], cur: dict[str, Any], bullet: str, rules: Rules) -> dict[str, Any]:
+def _append_bullet_with_limit(
+    pages: list[dict[str, Any]],
+    cur: dict[str, Any],
+    bullet: str,
+    rules: Rules,
+    intent: str,
+) -> dict[str, Any]:
     # 如果 bullet 本身超长，先切片
     for piece in _split_long_text(bullet, rules.max_chars_per_page):
         cur["bullets"].append(piece)
+        cur.setdefault("items", []).append({"text": piece, "intent": intent})
         if _projected_len(cur) > rules.max_chars_per_page:
             # 回退这条，先落盘当前页，再开新页放进去
             cur["bullets"].pop()
+            cur["items"].pop()
             pages.append(_finalize_page(cur))
             nxt_title = f"{cur.get('title', '知识点')}（续）"
             cur = _new_page(nxt_title, cur.get("page_type", "bullets"), topic=cur.get("topic", ""), first_signal="char_limit")
             cur["evidence"]["split_reason"].append("char_limit")
             cur["bullets"].append(piece)
+            cur.setdefault("items", []).append({"text": piece, "intent": intent})
     return cur
 
 
-def _append_quote_with_limit(pages: list[dict[str, Any]], cur: dict[str, Any], quote: str, rules: Rules) -> dict[str, Any]:
+def _append_quote_with_limit(
+    pages: list[dict[str, Any]],
+    cur: dict[str, Any],
+    quote: str,
+    rules: Rules,
+    intent: str,
+) -> dict[str, Any]:
     for piece in _split_long_text(quote, rules.max_chars_per_page):
         cur["quotes"].append(piece)
+        cur.setdefault("items", []).append({"text": piece, "intent": intent})
         if _projected_len(cur) > rules.max_chars_per_page:
             cur["quotes"].pop()
+            cur["items"].pop()
             pages.append(_finalize_page(cur))
             cur = _new_page("引用（续）", "quote", topic=cur.get("topic", ""), first_signal="char_limit")
             cur["evidence"]["split_reason"].append("char_limit")
             cur["quotes"].append(piece)
+            cur.setdefault("items", []).append({"text": piece, "intent": intent})
     return cur
 
 
@@ -519,7 +542,8 @@ def _paginate(blocks: list[str], rules: Rules) -> list[dict[str, Any]]:
                 cur = _new_page("引用", "quote", topic=cur.get("topic", ""), first_signal="quote_block")
 
             cur["evidence"]["signals"].append("quote_block")
-            cur = _append_quote_with_limit(pages, cur, clean_text, rules)
+            # 引用类内容 → SUPPORT
+            cur = _append_quote_with_limit(pages, cur, clean_text, rules, intent="SUPPORT")
             continue
 
         # 老师出镜/寒暄页（标签优先，否则用原有检测）
@@ -529,7 +553,8 @@ def _paginate(blocks: list[str], rules: Rules) -> list[dict[str, Any]]:
                 cur = _new_page("老师出镜", "teacher_only", topic="", first_signal="teacher_only")
 
             for b in _split_to_bullets(clean_text):
-                cur = _append_bullet_with_limit(pages, cur, b, rules)
+                # 老师出镜 / 寒暄页 → SAY
+                cur = _append_bullet_with_limit(pages, cur, b, rules, intent="SAY")
             continue
 
         # 知识点页（knowledge / example）
@@ -554,10 +579,14 @@ def _paginate(blocks: list[str], rules: Rules) -> list[dict[str, Any]]:
 
                 if cur["page_type"] == "teacher_only":
                     # 从老师出镜进入知识点
-                    pages.append(_finalize_page(cur))
-                    cur = _new_page("知识点", "bullets", topic="", first_signal="enter_knowledge")
+                    if cur["bullets"] or cur["quotes"]:
+                        pages.append(_finalize_page(cur))
+                    cur = _new_page("知识点", "bullets", topic=cur.get("topic", ""), first_signal="enter_knowledge")
+                    cur["evidence"]["split_reason"].append("enter_knowledge")
 
-                cur = _append_bullet_with_limit(pages, cur, b, rules)
+                # 知识点主体 → SHOW；例子说明 → SUPPORT
+                intent = "SHOW" if block_type == "knowledge" else "SUPPORT"
+                cur = _append_bullet_with_limit(pages, cur, b, rules, intent=intent)
 
     if cur["bullets"] or cur["quotes"] or cur["page_type"] in ("section_page", "teacher_only", "quote"):
         pages.append(_finalize_page(cur))
